@@ -1,0 +1,239 @@
+import os
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras import layers, models
+
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+base_dir = '.'
+IMG_SIZE = (150, 150)
+BATCH_SIZE = 32
+RANDOM_SEED = 123
+EPOCHS = 30  # ✅ Augmenté de 20 à 30
+
+
+print("==================================================")
+print("=== PARTIE 1 & 2 : PRÉPARATION DES DONNÉES ===")
+print("==================================================")
+
+
+train_ds = tf.keras.utils.image_dataset_from_directory(
+    base_dir,
+    validation_split=0.3,
+    subset="training",
+    seed=RANDOM_SEED,
+    image_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    label_mode='binary',
+    class_names=['cats', 'dogs']
+)
+
+
+val_and_test_ds = tf.keras.utils.image_dataset_from_directory(
+    base_dir,
+    validation_split=0.3,
+    subset="validation",
+    seed=RANDOM_SEED,
+    image_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    label_mode='binary',
+    class_names=['cats', 'dogs']
+)
+
+
+val_batches = tf.data.experimental.cardinality(val_and_test_ds)
+test_batches = val_batches // 3
+
+test_ds = val_and_test_ds.take(test_batches)
+val_ds = val_and_test_ds.skip(test_batches)
+
+
+print(f"Train (70%)      : {tf.data.experimental.cardinality(train_ds)} lots")
+print(f"Validation (20%) : {tf.data.experimental.cardinality(val_ds)} lots")
+print(f"Test (10%)       : {tf.data.experimental.cardinality(test_ds)} lots")
+
+
+normalization_layer = layers.Rescaling(1./255)
+AUTOTUNE = tf.data.AUTOTUNE
+
+
+def prepare_ds(ds):
+    return ds.map(lambda x, y: (normalization_layer(x), y)).cache().prefetch(buffer_size=AUTOTUNE)
+
+
+train_ds = prepare_ds(train_ds)
+val_ds = prepare_ds(val_ds)
+test_ds = prepare_ds(test_ds)
+
+
+print("\n==================================================")
+print("=== PARTIE 3 & 5 : ARCHITECTURE + DATA AUGMENTATION ===")
+print("==================================================")
+
+
+# ✅ Data augmentation MODÉRÉE
+data_augmentation = tf.keras.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.15),  # ✅ Réduit de 0.2 à 0.15
+    layers.RandomZoom(0.15),      # ✅ Réduit de 0.2 à 0.15
+])
+
+
+# ✅ Architecture améliorée avec BatchNormalization
+model = models.Sequential([
+    layers.Input(shape=(150, 150, 3)),
+    data_augmentation,
+
+    # Couche 1
+    layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
+    layers.BatchNormalization(),  # ✅ AJOUT : stabilise l'apprentissage
+    layers.MaxPooling2D((2, 2)),
+
+    # Couche 2
+    layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+    layers.BatchNormalization(),  # ✅ AJOUT
+    layers.MaxPooling2D((2, 2)),
+
+    # Couche 3
+    layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+    layers.BatchNormalization(),  # ✅ AJOUT
+    layers.MaxPooling2D((2, 2)),
+
+    # Classifieur
+    layers.Flatten(),
+    layers.Dense(256, activation='relu'),  # ✅ Augmenté de 128 à 256
+    layers.Dropout(0.3),  # ✅ Réduit de 0.5 à 0.3 (moins de régularisation)
+    layers.Dense(128, activation='relu'),  # ✅ AJOUT : couche dense supplémentaire
+    layers.Dropout(0.3),  # ✅ AJOUT
+
+    layers.Dense(1, activation='sigmoid')
+])
+
+
+model.compile(
+    optimizer='adam',
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
+
+
+model.summary()
+
+
+print("\n==================================================")
+print("=== PARTIE 4 : ENTRAÎNEMENT ET COURBES ===")
+print("==================================================")
+
+
+# ✅ AJOUT : EarlyStopping pour éviter le surapprentissage
+early_stopping = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    patience=5,
+    restore_best_weights=True
+)
+
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+    callbacks=[early_stopping],  # ✅ AJOUT
+    verbose=1
+)
+
+
+# Visualisation
+acc = history.history['accuracy']
+val_acc = history.history['val_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs_range = range(len(acc))  # ✅ MODIFIÉ : utiliser len(acc) car EarlyStopping peut arrêter avant
+
+
+plt.figure(figsize=(12, 6))
+
+plt.subplot(1, 2, 1)
+plt.plot(epochs_range, acc, label='Training Accuracy')
+plt.plot(epochs_range, val_acc, label='Validation Accuracy')
+plt.legend(loc='lower right')
+plt.title('Précision (Accuracy)')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.grid(True)
+
+plt.subplot(1, 2, 2)
+plt.plot(epochs_range, loss, label='Training Loss')
+plt.plot(epochs_range, val_loss, label='Validation Loss')
+plt.legend(loc='upper right')
+plt.title('Perte (Loss)')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+print("\n==================================================")
+print("=== ÉVALUATION SUR LE TEST SET ===")
+print("==================================================")
+test_loss, test_acc = model.evaluate(test_ds)
+print(f"Test Accuracy: {test_acc*100:.2f}%")
+print(f"Test Loss: {test_loss:.4f}")
+
+
+print("\n==================================================")
+print("=== PARTIE 6 : TEST SUR VOS PROPRES IMAGES ===")
+print("==================================================")
+
+
+dossier_test_manuel = 'images_test' 
+
+if not os.path.exists(dossier_test_manuel):
+    print(f"ATTENTION : Créez un dossier '{dossier_test_manuel}' à côté de main.py")
+    print("Et mettez-y des images .jpg (chat ou chien) pour les tester.")
+else:
+    images_a_tester = [f for f in os.listdir(dossier_test_manuel) if f.endswith(('.jpg', '.jpeg', '.png'))]
+
+    if len(images_a_tester) == 0:
+        print("Le dossier est vide ! Ajoutez des images.")
+    else:
+        plt.figure(figsize=(15, 5))
+
+        for i, nom_image in enumerate(images_a_tester):
+            chemin_complet = os.path.join(dossier_test_manuel, nom_image)
+
+            img = tf.keras.utils.load_img(chemin_complet, target_size=(150, 150))
+            img_array = tf.keras.utils.img_to_array(img)
+            img_array = tf.expand_dims(img_array, 0) 
+            img_array /= 255.0
+
+            prediction = model.predict(img_array, verbose=0)
+            score = float(prediction[0])
+
+            label = "Chien" if score > 0.5 else "Chat"
+            confiance = score * 100 if score > 0.5 else (1 - score) * 100
+
+            if len(images_a_tester) <= 6:
+                ax = plt.subplot(1, len(images_a_tester), i + 1)
+            else:
+                ax = plt.subplot(2, (len(images_a_tester)+1)//2, i + 1)
+
+            plt.imshow(img)
+            plt.title(f"{label}\nConfiance: {confiance:.1f}%")
+            plt.axis("off")
+
+            print(f"Image '{nom_image}' -> {label} ({confiance:.1f}%)")
+
+        plt.tight_layout()
+        plt.show()
+
+
+print("\n==================================================")
+print("=== FIN DU TP ===")
+print("==================================================")
+ 
